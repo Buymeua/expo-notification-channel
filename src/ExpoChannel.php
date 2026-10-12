@@ -56,29 +56,36 @@ class ExpoChannel
             $to = [$to];
         }
 
-        $messages = array_map(
-            function ($recipient) use ($message) {
-                return array_merge(['to' => $recipient], $message->toArray());
-            },
-            $to
-        );
+        // One request per recipient: Expo rejects a whole batch with
+        // PUSH_TOO_MANY_EXPERIENCE_IDS when the tokens belong to different
+        // projects (e.g. a stale token from a previous app build next to the
+        // current one), which used to drop the push for every device.
+        $response = null;
+        $firstClientError = null;
 
-        try {
-            $response = $this->client->request(
-                'post',
-                'https://exp.host/--/api/v2/push/send',
-                ['json' => $messages]
-            );
+        foreach ($to as $recipient) {
+            try {
+                $response = $this->client->request(
+                    'post',
+                    'https://exp.host/--/api/v2/push/send',
+                    ['json' => [array_merge(['to' => $recipient], $message->toArray())]]
+                );
 
-            if ($response->getStatusCode() !== 200) {
-                throw CouldNotSendNotification::serviceRespondedWithAnError($response);
+                if ($response->getStatusCode() !== 200) {
+                    throw CouldNotSendNotification::serviceRespondedWithAnError($response);
+                }
+            } catch (ClientException $exception) {
+                $firstClientError = $firstClientError ?? CouldNotSendNotification::clientError($exception);
+                $response = null;
+            } catch (Exception $exception) {
+                throw CouldNotSendNotification::unexpectedException($exception);
             }
-
-            return $response;
-        } catch (ClientException $exception) {
-            throw CouldNotSendNotification::clientError($exception);
-        } catch (Exception $exception) {
-            throw CouldNotSendNotification::unexpectedException($exception);
         }
+
+        if ($response === null && $firstClientError !== null) {
+            throw $firstClientError;
+        }
+
+        return $response;
     }
 }

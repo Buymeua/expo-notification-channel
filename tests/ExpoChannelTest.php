@@ -27,19 +27,49 @@ class ExpoChannelTest extends TestCase
     }
 
     /** @test */
-    public function can_send_notification_to_notifible_array()
+    public function sends_one_request_per_recipient()
     {
         $mock = new MockHandler([
-            new Response(200, ['Content-Type' => 'application/json'], '{"data":[{"id":"e74c5f71-c9f0-4dcb-95b9-3dd6bc8d4b0f","status":"ok"},{"status":"ok","id":"d46deba0-1b77-482e-bb29-af2331b7b8d8"}]}'),
+            new Response(200, ['Content-Type' => 'application/json'], '{"data":{"id":"e74c5f71-c9f0-4dcb-95b9-3dd6bc8d4b0f","status":"ok"}}'),
+            new Response(200, ['Content-Type' => 'application/json'], '{"data":{"status":"ok","id":"d46deba0-1b77-482e-bb29-af2331b7b8d8"}}'),
         ]);
         $handlerStack = HandlerStack::create($mock);
         $guzzle = new Client(['handler' => $handlerStack]);
 
         $channel = new ExpoChannel($guzzle);
 
-        $response = $channel->send(new Notifiable(), new TestNotification());
+        $response = $channel->send(new NotifiableArray(), new TestNotification());
         $json = json_decode($response->getBody());
-        $this->assertTrue($json->data[0]->status === 'ok');
-        $this->assertTrue($json->data[1]->status === 'ok');
+        $this->assertTrue($json->data->status === 'ok');
+        $this->assertSame(0, $mock->count());
+        $this->assertSame('ExponentPushToken[yyyyyyyyyyyyyyyyyyyyyy]', json_decode($mock->getLastRequest()->getBody())[0]->to);
+    }
+
+    /** @test */
+    public function a_rejected_recipient_does_not_fail_the_others()
+    {
+        $mock = new MockHandler([
+            new Response(400, ['Content-Type' => 'application/json'], '{"errors":[{"code":"PUSH_TOO_MANY_EXPERIENCE_IDS","type":"USER"}]}'),
+            new Response(200, ['Content-Type' => 'application/json'], '{"data":{"status":"ok","id":"d46deba0-1b77-482e-bb29-af2331b7b8d8"}}'),
+        ]);
+        $guzzle = new Client(['handler' => HandlerStack::create($mock)]);
+
+        $response = (new ExpoChannel($guzzle))->send(new NotifiableArray(), new TestNotification());
+
+        $this->assertSame('ok', json_decode($response->getBody())->data->status);
+    }
+
+    /** @test */
+    public function throws_when_every_recipient_is_rejected()
+    {
+        $mock = new MockHandler([
+            new Response(400, [], '{"errors":[{"code":"PUSH_TOO_MANY_EXPERIENCE_IDS"}]}'),
+            new Response(400, [], '{"errors":[{"code":"PUSH_TOO_MANY_EXPERIENCE_IDS"}]}'),
+        ]);
+        $guzzle = new Client(['handler' => HandlerStack::create($mock)]);
+
+        $this->expectException(\NotificationChannels\Expo\Exceptions\CouldNotSendNotification::class);
+
+        (new ExpoChannel($guzzle))->send(new NotifiableArray(), new TestNotification());
     }
 }
